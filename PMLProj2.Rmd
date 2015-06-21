@@ -1,0 +1,158 @@
+---
+title: "Predicting activity from wearable technology data"
+author: "Haliburton"
+date: "Saturday, June 20, 2015"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE, results=FALSE, message=FALSE,warnings=FALSE)
+```
+
+```{r loadlibraries,results ='hide', message=FALSE, warning=FALSE}
+library(caret);library(lubridate)
+library(RCurl);library(dplyr)
+```
+
+#Background
+Using wearable devices, it is possible to collect a large amount of data about personal activity relatively inexpensively.
+6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+The goal of this project is to use data from accelerometers on the belt, forearm, arm, and dumbell of the participants to predict the manner in which they did the exercise, ("classe" variable in the training set) using any variables in the data.
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har
+
+#Read in the data
+
+``` {r readindata, results ='hide', message=FALSE, warning=FALSE}
+data <- getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+               ssl.verifypeer=0L, followlocation=1L)
+writeLines(data,'./data/pml-training.csv')
+dd <- read.table("./data/pml-training.csv", sep=",",header=T, stringsAsFactors = FALSE)
+```
+
+##Cleaning, exploring and inspecting data
+
+```{r clean, results='hide',message=FALSE, warning=FALSE}
+cleanset <- dd
+        #Find variables that have virtually zero variances and remove them
+        #as they are unlikely to be good predictors
+        nsv <- nearZeroVar(cleanset,saveMetrics = TRUE);length(nsv[nsv$nzv==TRUE,])
+        zerovars <- nsv[nsv$nzv==TRUE,];zvars <- rownames(zerovars)
+        #Subset the data to only use data that has likely predictors
+        trainingss <- subset(cleanset, select = ! names(cleanset) %in% zvars)
+
+        #Find and remove columns that have high ratio of NA to non-NA as they'd be unhelpful
+        highNA <- colSums(is.na(trainingss));noNA <- colSums(!is.na(trainingss))
+        mytest <- rbind(highNA,noNA)
+        mmtest <- as.data.frame(t(mytest)) # swap the columns to rows for easy computation and subsetting
+        mmtest$perc <- mmtest$highNA/(mmtest$noNA + mmtest$highNA)
+        tooHigh <- mmtest[mmtest$perc>.9,] # Chose 90% as cutoff ratio to exclude
+        highNADrops <- rownames(tooHigh)
+trainingss <- subset(trainingss, select = ! names(trainingss) %in% highNADrops)
+```
+
+##Create training and testing sets.
+
+```{r splitsets,message=FALSE, warning=FALSE}
+inTrain <- createDataPartition(y=trainingss$classe,p=0.6,list=FALSE)
+training <- trainingss[inTrain,]
+testing <- trainingss[-inTrain,]
+```
+
+#Principal component analysis
+
+PCA needs numeric values only so for PCA investigation, drop all non-numeric values and the outcome variable from the training set.
+
+Drop columns because those might affect predictions in unhelpful ways due to artificial ordering of the data for 'X' (which is a sequence number) and dates and timestamps related to the order in which each subject carried out the intentional exercise.
+
+```{r pca,message=FALSE, warning=FALSE}
+        drops <- c("X","user_name","date", "raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp")
+        mytrain2 <- subset(training, select = ! names(training) %in% drops);
+        mytest2 <- subset(testing, select = ! names(testing) %in% drops)
+        mytrain2$classe <- as.factor(mytrain2$classe);mytest2$classe <- as.factor(mytest2$classe)
+mytrain2pca <- mytrain2[,-54]  #removing the outcome        
+m2pca <- prcomp(mytrain2pca, center = TRUE,scale. = TRUE) 
+plot(m2pca, main="PC's (on x-axis) explaining variance", type = "l") # plot how much each PC explains variance
+```
+
+The summary method describes the importance of the PCs. Here are just the first 4 PC's for example.
+
+```{r pcasummary}
+s <- summary(m2pca); s$importance[,1:4]
+```
+
+The first row describes the standard deviation associated with each PC.
+The second row shows the proportion of the variance in the data explained by each component.
+The third row describes the cumulative proportion of explained variance.
+
+It shows that there aren't just 2 or 3 principal components explaining 95% of the variance. We need a number of PC's to explain the variance so the decision is to leave all of those variables in the model.
+
+#Cross-validation
+
+First model tested is a recursive partitioning model (rpart) with 10 folds for crossvalidation.
+
+```{r modelrpart, message=FALSE, warning=FALSE}
+tc <- trainControl("cv",10)
+fitrpartcv<- train(classe ~ ., method="rpart", trControl=tc,data = mytrain2)
+predrpartcv <- predict(fitrpartcv,mytest2)
+cmrpartcv <- confusionMatrix(predrpartcv, mytest2$classe) 
+accuracyrpartcv <- cmrpartcv$overall[1] 
+oosrpartcv <- 1-accuracyrpartcv
+cmrpartcv
+```
+
+Accuracy `r oosrpartcv` .
+
+Tried another rpart model with default bootstrap sampling using 25 repetitions.
+
+```{r modelrpart2}
+fitrpart<- train(classe ~ ., method="rpart", data = mytrain2)
+predrpart <- predict(fitrpart,mytest2)
+cmrpart <- confusionMatrix(predrpart, mytest2$classe) 
+accuracyrpart <- cmrpart$overall[1] 
+oosrpart <- 1-accuracyrpart
+cmrpart
+```
+
+Looking at the table results and overall stats, the accuracy is still low: `r accuracyrpart` .
+Out of sample error is `r oosrpart` .
+
+Second model tested is linear discriminant analysis
+
+```{r modellda, message=FALSE, warning=FALSE}
+fitlda <- train(classe ~ ., method="lda", data = mytrain2)
+predlda<- predict(fitlda, mytest2)
+cmlda <- confusionMatrix(predlda, mytest2$classe)
+accuracylda <- cmlda$overall[1] 
+ooslda <- 1-accuracylda
+cmlda
+```
+
+Cross valiation: the model used default bootstrapping with 25 repetitions.
+Accuracy is improved:  `r accuracylda`.  Out of sample error `r ooslda` .
+
+Third model tested is random forests
+
+```{r modelrf}
+fitrf <- train(classe ~ ., method="rf", data = mytrain2)   
+predrf <- predict(fitrf, mytest2) 
+cmrf <- confusionMatrix(predrf, mytest2$classe)
+accuracyrf <- cmrf$overall[1]
+oosrf <- 1-accuracyrf
+cmrf
+```
+
+Random forests model produced the best accuracy of all models. `r accuracyrf` .
+Out of sample error: `r oosrf` .
+
+#Conclusion
+
+Validate the data against testing set.
+
+```{r validation, eval=FALSE}
+URL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(URL, destfile = "./data/pml-testing.csv")
+test <- read.table("./data/pml-testing.csv", sep=",",header=T, stringsAsFactors = FALSE)
+predrfreal <- predict(fitrf, test);answers <- as.character(predrfreal) #Create predictions on test problem_id's
+```
+
+The random forest model had the best out of sample error and, when run against the test data and produced a 100% predictions in the 20 test cases.
