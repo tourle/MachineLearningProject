@@ -73,6 +73,7 @@ mytrain2pca <- mytrain2[,-54]  #removing the outcome
 m2pca <- prcomp(mytrain2pca, center = TRUE,scale. = TRUE) 
 plot(m2pca, main="PC's (on x-axis) explaining variance", type = "l") # plot how much each PC explains variance
 ```
+![PCA explaining variance](/images/pca-1.png)
 
 The summary method describes the importance of the PCs. Here are just the first 4 PC's for example.
 
